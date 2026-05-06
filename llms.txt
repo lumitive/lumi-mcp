@@ -1,0 +1,92 @@
+# Lumi MCP
+
+> Agent-ready commerce gateway. Standard Model Context Protocol — no
+> per-vendor SDK. Five surface-equivalent transports (stdio, streamable-HTTP,
+> WhatsApp, web companion, browser-use) all share one tool catalog and one
+> audit ledger.
+
+This is the canonical machine-readable entry point. If you are an AI agent
+indexing this site, prefer `tools.json` for the live tool catalog and
+`mcp.json` for a paste-ready client config.
+
+## Endpoints
+
+- HTTP (streamable):  `https://<host>/mcp/mcp`
+- stdio:              `python -m services.mcp_external`
+- Tool manifest:      `/tools.json`
+- Bearer mint (REST): `POST /api/external/identity/issue`
+- Bearer mint (MCP):  `identity.issue` tool
+- Audit tail:         `GET /api/external/agent_audit`
+
+## Auth
+
+Authorization: Bearer <jwt>. Token is minted from `identity.issue` and
+carries `agent_id`, `cardholder_id`, `scopes`, `rate_limit_per_minute`.
+The `agent_id` / `cardholder_id` args on individual tools are a stdio
+fallback only — they are IGNORED when an Authorization header is present.
+
+## Conversation flow
+
+merchant.search → menu.get → [order.calculate →] order.place
+                          → cart.create + cart.add* + cart.checkout
+                          → session.handoff (cross-surface continuity)
+
+Two-stage commit (order.calculate → order.place(quote_id=…)) is the
+recommended path for confirm-then-charge UX. The quote_id binds items +
+total + delivery_note at quote time and doubles as a natural idempotency
+key — replaying with the same quote_id returns the original order.
+
+## Tool inventory (18 primary, 5 aliases)
+
+merchant.*  search
+menu.*      get
+order.*     calculate, place, list
+cart.*      create, add, update, remove, view, checkout
+session.*   handoff, resume
+payment.*   authorize, charge, refund, audit
+identity.*  issue
+
+Aliases (back-compat for older agent prompts):
+  search_merchants → merchant.search
+  get_menu → menu.get
+  place_order → order.place
+  list_recent_orders → order.list
+  payment.agenzo_charge → payment.charge(provider="agenzo")
+
+## Idempotency
+
+order.place and cart.checkout accept idempotency_key. Same key replayed
+within 10 minutes returns the original order verbatim, including the
+receipt UI block. quote_id (when used) auto-defaults the key to
+"q:<quote_id>" so retrying the same quote can never double-charge.
+
+## SKU validation
+
+`items[*].sku` is a closed enum (~14 SKUs derived from the live menu).
+Bad SKUs are rejected at the JSON-Schema layer before reaching the
+handler. Read items[*].sku from menu.get verbatim; do not synthesize.
+
+## Out-of-stock + alternatives
+
+menu.get marks out_of_stock items and surfaces a suggested alternative
+(items[*].suggest_alternative_sku). Agents should never include an
+out_of_stock SKU in an order.
+
+## Embedded UI (MCP-UI / SEP-1865)
+
+cart.* and order.place return inline-html EmbeddedResources alongside
+the JSON payload (`ui://lumi/cart/<id>`, `ui://lumi/order-receipt/<id>`).
+UI-capable hosts (Claude Desktop) render the cards; plain-text clients
+ignore them.
+
+## Audit
+
+Every tool call lands in `agent_audit_log` (sqlite) with agent_id,
+cardholder_id, args_hash, latency_ms, result_status. Tail via REST
+`GET /api/external/agent_audit?limit=50`.
+
+## See also
+
+- /tools.json   — full tool schemas (machine-readable)
+- /mcp.json     — paste-ready client config
+- /index.html   — human-readable overview

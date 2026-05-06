@@ -1,0 +1,798 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schemas/draft/2024-11-05/tools.schema.json",
+  "server": {
+    "name": "ai-ready-merchant",
+    "version": "1.0.0",
+    "instructions": "AI Ready — agent-ready commerce gateway for restaurants in Hong Kong. Conversation flow:\n  merchant.search → menu.get → (cart.create + cart.add* + cart.checkout)  ← multi-turn\n                              → order.place                                ← single-call\nTool naming: dotted (merchant.search, menu.get, order.place, order.list). Snake-case aliases (search_merchants, get_menu, place_order, list_recent_orders) are kept for back-compat; prefer the dotted names in new agents.\nIdentity: pass a Bearer token in `Authorization` for production; the agent_id / cardholder_id args are a demo fallback. Payment: mint a JWT via payment.authorize, then pass it as payment_token to order.place / cart.checkout. All money-moving tools accept `idempotency_key` — pass the same key on retry to avoid duplicate charges."
+  },
+  "endpoints": {
+    "http_streamable": "/mcp/mcp",
+    "stdio_command": "python -m services.mcp_external"
+  },
+  "auth": {
+    "type": "bearer",
+    "header": "Authorization",
+    "issue_endpoint": "POST /api/external/identity/issue",
+    "issue_tool": "identity.issue",
+    "fallback": "agent_id + cardholder_id args (stdio only; ignored when Bearer present)"
+  },
+  "conventions": {
+    "naming": "dotted (namespace.verb)",
+    "idempotency": "order.place + cart.checkout accept idempotency_key; quote_id auto-derives one",
+    "sku": "closed enum from menu.get; rejected at schema layer",
+    "two_stage_commit": "order.calculate → order.place(quote_id=…)"
+  },
+  "conversation_flow": [
+    "merchant.search",
+    "menu.get",
+    "order.calculate (optional, recommended)",
+    "order.place  OR  cart.create + cart.add* + cart.checkout",
+    "session.handoff (cross-surface continuity)"
+  ],
+  "tools": [
+    {
+      "name": "cart.add",
+      "namespace": "cart",
+      "description": "Add a line item to an existing cart.\n\n        Returns a list of MCP content blocks: a JSON TextContent with the\n        updated cart, plus an inline-html `ui://cart/{cart_id}` card so\n        UI-capable hosts render the running tally.\n\n        Args:\n            cart_id: From `cart.create`.\n            sku: From `menu.get` / `get_menu`.\n            quantity: Defaults to 1, clamped to >= 1.\n            note: Per-line note (e.g. \"less sweet, no foam\").\n            idempotency_key: Optional — pass the same key on a retry to avoid\n                double-add. Cached for 10 minutes.",
+      "inputSchema": {
+        "properties": {
+          "cart_id": {
+            "title": "Cart Id",
+            "type": "string"
+          },
+          "sku": {
+            "title": "Sku",
+            "type": "string"
+          },
+          "quantity": {
+            "default": 1,
+            "title": "Quantity",
+            "type": "integer"
+          },
+          "note": {
+            "default": "",
+            "title": "Note",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cart_id",
+          "sku"
+        ],
+        "title": "cart_addArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "cart.checkout",
+      "namespace": "cart",
+      "description": "Convert an open cart into a real order, optionally paying immediately.\n\n        When to call: user says \"下单 / pay now / 结账 / place the order\" after\n        editing the cart via cart.add* / cart.update / cart.remove.\n\n        Upstream: cart.create → cart.add* → cart.checkout. Internally dispatches\n        through the same handler as order.place so audit / receipt / POS-mock\n        paths stay unified.\n\n        Field map (from cart.view):\n          cart.lines[*].sku  → order.items[*].sku\n          cart.lines[*].qty  → order.items[*].quantity\n          cart.lines[*].note → order.items[*].note\n\n        Args:\n            cart_id: From cart.create.\n            payment_token: Optional JWT from payment.authorize.\n            delivery_note: Free-form delivery / pickup instructions.\n            idempotency_key: Pass the SAME key on retry to avoid double-charge.\n                Forwarded to order.place; cached for 10 minutes. Recommended:\n                \"<cart_id>:checkout\" or a UUIDv4 generated once per user-confirm.\n\n        Output: same shape as order.place — {order_id, items[], total_hkd,\n            payment_status, ...}, plus the receipt UI EmbeddedResource.\n\n        Hard constraint: cart transitions to `checked_out` on success and can\n        no longer be mutated; subsequent cart.add/update/remove return\n        cart_closed. Calling cart.checkout on an empty cart returns cart_empty.",
+      "inputSchema": {
+        "properties": {
+          "cart_id": {
+            "title": "Cart Id",
+            "type": "string"
+          },
+          "payment_token": {
+            "default": "",
+            "title": "Payment Token",
+            "type": "string"
+          },
+          "delivery_note": {
+            "default": "",
+            "title": "Delivery Note",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cart_id"
+        ],
+        "title": "cart_checkoutArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "cart.create",
+      "namespace": "cart",
+      "description": "Create a new cart for a (merchant, cardholder, agent) triple.\n\n        Returns the empty cart with its `cart_id`. Subsequent `cart.*`\n        calls must pass this `cart_id` to keep operating on the same cart.\n\n        Args:\n            merchant_id: Defaults to the demo merchant.\n            agent_id: Calling agent identifier (logged for audit).\n            cardholder_id: User identity within the calling agent host.",
+      "inputSchema": {
+        "properties": {
+          "merchant_id": {
+            "default": "",
+            "title": "Merchant Id",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "title": "cart_createArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "cart.remove",
+      "namespace": "cart",
+      "description": "Remove a single line from the cart. Equivalent to `cart.update`\n        with quantity=0.",
+      "inputSchema": {
+        "properties": {
+          "cart_id": {
+            "title": "Cart Id",
+            "type": "string"
+          },
+          "line_id": {
+            "title": "Line Id",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cart_id",
+          "line_id"
+        ],
+        "title": "cart_removeArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "cart.update",
+      "namespace": "cart",
+      "description": "Update a single cart line — change quantity (0 deletes the line)\n        or rewrite the note. At least one of `quantity` or `note` is required.",
+      "inputSchema": {
+        "properties": {
+          "cart_id": {
+            "title": "Cart Id",
+            "type": "string"
+          },
+          "line_id": {
+            "title": "Line Id",
+            "type": "string"
+          },
+          "quantity": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Quantity"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "cart_id",
+          "line_id"
+        ],
+        "title": "cart_updateArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "cart.view",
+      "namespace": "cart",
+      "description": "Return the current cart state with an embedded UI card.\n\n        If `cart_id` is empty, falls back to the most recent open cart for\n        this cardholder — so a host that lost the cart_id (or one resuming\n        a cross-channel session) can still recover. Pass an explicit\n        `cart_id` to disambiguate when a cardholder has multiple open carts.",
+      "inputSchema": {
+        "properties": {
+          "cart_id": {
+            "default": "",
+            "title": "Cart Id",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "title": "cart_viewArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "identity.issue",
+      "namespace": "identity",
+      "description": "Mint a bearer token an external host can attach to subsequent\n        calls in the `Authorization: Bearer …` header. Useful when an\n        admin issues credentials for a new host platform.",
+      "inputSchema": {
+        "properties": {
+          "agent_id": {
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "title": "Cardholder Id",
+            "type": "string"
+          },
+          "host_platform": {
+            "default": "unknown",
+            "title": "Host Platform",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 86400,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "cardholder_id"
+        ],
+        "title": "identity_issueArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "menu.get",
+      "namespace": "menu",
+      "description": "Return the live menu for one merchant.\n\n        When to call: after the user picks a merchant (or directly if there is\n        only one) and asks \"what do you have / what's good / 有什么 / 推荐\". Cache\n        per-conversation; the menu changes only if you go back to merchant.search\n        for a different merchant_id.\n\n        Upstream: merchant.search. Downstream: order.place / cart.add.\n\n        Args:\n            merchant_id: From merchant.search results[*].merchant_id.\n            query: Optional case-insensitive substring filter against name /\n                category. Try \"drink\", \"bakery\", \"meal\", \"bundle\", or a Chinese\n                keyword like \"拿铁\".\n\n        Output:\n          items[*].sku                        → pass verbatim into order.place\n                                                 items[*].sku / cart.add(sku=…).\n          items[*].out_of_stock=true          → DO NOT include this sku in an\n                                                 order. Offer items[*].\n                                                 suggest_alternative_sku instead.\n          agent_hints.promotions[]            → mention the matching promo when\n                                                 the user adds the sku.\n          agent_hints.expiring_soon[]         → optional upsell.\n          agent_hints.behavior                → behavioral nudge to follow.\n\n        Hard constraint: SKUs belong to the merchant that returned them. Do not\n        reuse a sku from one merchant in an order for another merchant.\n\n        UI-capable hosts (Claude Desktop) also receive up to 3 product-card\n        EmbeddedResources for customizable items; plain-text clients ignore them.",
+      "inputSchema": {
+        "properties": {
+          "merchant_id": {
+            "title": "Merchant Id",
+            "type": "string"
+          },
+          "query": {
+            "default": "",
+            "title": "Query",
+            "type": "string"
+          }
+        },
+        "required": [
+          "merchant_id"
+        ],
+        "title": "get_menuArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "merchant.search",
+      "namespace": "merchant",
+      "description": "Discover merchants by area and (optional) cuisine type.\n\n        When to call: at the start of an ordering conversation, or when the user\n        mentions a new area/cuisine (\"找一家中环的咖啡店\", \"any coffee shops nearby\").\n        Cache the response for the conversation — the merchant set is stable.\n\n        Upstream of: menu.get, order.place. Use the returned `merchant_id` verbatim.\n\n        Args:\n            area: Geography filter, e.g. \"Hong Kong\", \"Central\", \"Kowloon\".\n            cuisine: Optional category, e.g. \"coffee\", \"seafood\", \"bakery\".\n\n        Output: {\"area\", \"cuisine\", \"merchants\": [{merchant_id, name, area,\n            cuisine[], rating, today_open, today_gmv_hkd, ai_ready}]}.\n\n        Hard constraint: `merchant_id` strings are opaque — never construct them\n        by hand; pass them through verbatim from this tool's response.",
+      "inputSchema": {
+        "properties": {
+          "area": {
+            "default": "Hong Kong",
+            "title": "Area",
+            "type": "string"
+          },
+          "cuisine": {
+            "default": "",
+            "title": "Cuisine",
+            "type": "string"
+          }
+        },
+        "title": "search_merchantsArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "order.calculate",
+      "namespace": "order",
+      "description": "Compute the price for a draft order WITHOUT committing it.\n\n        When to call: AFTER the user has picked items but BEFORE they confirm\n        (\"帮我算一下 / quote me / what's the total\"). Show the user the quoted\n        total and any review flags; only call order.place(quote_id=…) once they\n        actually say \"yes / 下单 / pay now\".\n\n        Upstream: merchant.search → menu.get → order.calculate → order.place.\n        Two-stage commit (Starbucks calculate_pickup_price → create_pickup_order).\n\n        Field map (from menu.get): same as order.place's items[*].\n\n        Args:\n            merchant_id: From merchant.search.\n            items: Draft line items {sku, quantity?, note?}.\n            delivery_note: Free-form delivery / pickup instructions. Affects\n                confidence — passing one drops confidence below the autopilot\n                threshold and surfaces `needs_review=true` in the response.\n\n        Output: {quote_id, merchant_id, items[] (resolved with names+prices),\n            total_hkd, currency, expires_at, confidence, needs_review,\n            review_reason}.\n\n        Hard constraint: quote_id is valid for 10 minutes. After expiry,\n        order.place(quote_id) returns `quote_expired` and the agent must\n        re-call order.calculate. The quote freezes the price at calculate\n        time — even if the menu changes, the quoted total stands.",
+      "inputSchema": {
+        "$defs": {
+          "MenuSku": {
+            "enum": [
+              "BEV-LATTE",
+              "BEV-AMERICANO",
+              "BEV-MATCHA",
+              "BEV-FRAPP",
+              "FOOD-MAC-PST",
+              "FOOD-CROISS",
+              "FOOD-SALMON",
+              "BUNDLE-AFT-TEA",
+              "BEV-CAPPUCCINO",
+              "BEV-MOCHA",
+              "BEV-CARAMEL-MAC",
+              "BEV-FLAT-WHITE",
+              "BEV-VANILLA-LATTE",
+              "FOOD-CHOC-CROISS"
+            ],
+            "title": "MenuSku",
+            "type": "string"
+          },
+          "OrderItem": {
+            "description": "One ordered line item.\n\nField map (from menu.get response):\n  sku       ← items[*].sku   (closed enum — see schema for legal values)\n  quantity  ← positive integer\n  note      ← optional per-line modifier",
+            "properties": {
+              "sku": {
+                "$ref": "#/$defs/MenuSku",
+                "description": "SKU id from menu.get items[*].sku. Must be one of the menu's current SKUs and must NOT be marked items[*].out_of_stock=true."
+              },
+              "quantity": {
+                "default": 1,
+                "description": "Defaults to 1.",
+                "minimum": 1,
+                "title": "Quantity",
+                "type": "integer"
+              },
+              "note": {
+                "default": "",
+                "description": "Per-line note, e.g. \"less sweet, no foam\".",
+                "title": "Note",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sku"
+            ],
+            "title": "OrderItem",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "merchant_id": {
+            "title": "Merchant Id",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/$defs/OrderItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "delivery_note": {
+            "default": "",
+            "title": "Delivery Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "merchant_id",
+          "items"
+        ],
+        "title": "order_calculateArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "order.list",
+      "namespace": "order",
+      "description": "Read-only: most recent orders placed via the external MCP channel.\n\n        When to call: user asks \"show my recent orders / 最近下了什么单 / 再来一单\"\n        (so you can replay the items), or you need to reconcile against a prior\n        confirmation.\n\n        Args:\n            limit: 1..200, defaults to 10. The ledger is in-memory and capped at\n                200 rows process-wide.\n\n        Output: {count, orders: [...]}. Each order carries the same shape that\n        order.place returns, so you can replay items[*].sku into a new order or\n        a cart.add loop.",
+      "inputSchema": {
+        "properties": {
+          "limit": {
+            "default": 10,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "list_recent_ordersArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "order.place",
+      "namespace": "order",
+      "description": "Commit an order. Two ways to call:\n\n        1) Two-stage (RECOMMENDED): order.calculate → order.place(quote_id=…).\n           The quote binds items + total at quote time, doubles as a natural\n           idempotency key (same quote_id replayed = no double-charge), and\n           lets you show the user the final price BEFORE asking them to\n           confirm. Pattern: ask, calculate, show total, wait for \"yes\",\n           then place.\n        2) Single-call (legacy): order.place(merchant_id, items=[…]). Simpler\n           but the user can't preview the price; useful for stateless\n           single-shot agents. For multi-turn carts use\n           cart.create + cart.add* + cart.checkout instead.\n\n        When to call: user has CONFIRMED a final list of items and explicitly\n        asked to commit (\"下单 / 就这些 / place the order / pay now\"). Do not\n        call until the user confirms — this is the money-moving step.\n\n        Upstream: merchant.search → menu.get → [order.calculate →] order.place.\n                  (cart.checkout dispatches through this same handler.)\n\n        Field map (from menu.get):\n          items[*].sku       ← items[*].sku   (closed enum, validated)\n          items[*].quantity  ← positive integer\n          items[*].note      ← optional per-line modifier\n\n        Args:\n            merchant_id: From merchant.search. Required when not using quote_id;\n                IGNORED when quote_id is provided (quote owns the merchant).\n            items: Required when not using quote_id. Each {sku, quantity?, note?};\n                sku must come from menu.get and must NOT be marked out_of_stock.\n                IGNORED when quote_id is provided (quote owns the line items).\n            quote_id: From order.calculate. When present, items + merchant +\n                total are taken verbatim from the quote and `idempotency_key`\n                defaults to \"q:<quote_id>\" — a re-call with the same quote_id\n                returns the original order without re-charging.\n            payment_token: Optional JWT from payment.authorize. If present, the\n                order is charged immediately and `payment_status` reflects the\n                result. If absent, payment_status=\"pending\".\n            agent_id: (legacy fallback) Caller identifier. IGNORED when an\n                `Authorization: Bearer …` header is present — Bearer-derived\n                identity wins. Used by stdio clients (Claude Desktop) and\n                d7_dryrun where header injection isn't available.\n            delivery_note: Free-form delivery / pickup instructions.\n            idempotency_key: Pass the SAME key on a retry to return the original\n                order without creating a new one. Cached for 10 minutes.\n                Recommended pattern: \"<conversation_id>:<turn_id>\" or a UUIDv4\n                generated once per user-confirm event. Auto-defaulted to\n                \"q:<quote_id>\" when quote_id is provided.\n\n        Output: {order_id, items[], total_hkd, payment_status, confidence,\n            needs_review, review_reason, pos_status, pos_txn_id, charge_id?,\n            quote_id?, idempotent_replay?}. confidence < 0.85 routes to human\n            review; payment_status ∈ {paid, pending, \"declined:<reason>\",\n            \"error:<msg>\"}.\n\n        Hard constraint: never retry without `idempotency_key` (or quote_id,\n        which auto-derives one) — duplicate orders will charge twice. The\n        receipt UI resource is re-emitted on replay so the client sees a\n        stable view.",
+      "inputSchema": {
+        "$defs": {
+          "MenuSku": {
+            "enum": [
+              "BEV-LATTE",
+              "BEV-AMERICANO",
+              "BEV-MATCHA",
+              "BEV-FRAPP",
+              "FOOD-MAC-PST",
+              "FOOD-CROISS",
+              "FOOD-SALMON",
+              "BUNDLE-AFT-TEA",
+              "BEV-CAPPUCCINO",
+              "BEV-MOCHA",
+              "BEV-CARAMEL-MAC",
+              "BEV-FLAT-WHITE",
+              "BEV-VANILLA-LATTE",
+              "FOOD-CHOC-CROISS"
+            ],
+            "title": "MenuSku",
+            "type": "string"
+          },
+          "OrderItem": {
+            "description": "One ordered line item.\n\nField map (from menu.get response):\n  sku       ← items[*].sku   (closed enum — see schema for legal values)\n  quantity  ← positive integer\n  note      ← optional per-line modifier",
+            "properties": {
+              "sku": {
+                "$ref": "#/$defs/MenuSku",
+                "description": "SKU id from menu.get items[*].sku. Must be one of the menu's current SKUs and must NOT be marked items[*].out_of_stock=true."
+              },
+              "quantity": {
+                "default": 1,
+                "description": "Defaults to 1.",
+                "minimum": 1,
+                "title": "Quantity",
+                "type": "integer"
+              },
+              "note": {
+                "default": "",
+                "description": "Per-line note, e.g. \"less sweet, no foam\".",
+                "title": "Note",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sku"
+            ],
+            "title": "OrderItem",
+            "type": "object"
+          }
+        },
+        "properties": {
+          "merchant_id": {
+            "default": "",
+            "title": "Merchant Id",
+            "type": "string"
+          },
+          "items": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/OrderItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "quote_id": {
+            "default": "",
+            "title": "Quote Id",
+            "type": "string"
+          },
+          "payment_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Payment Token"
+          },
+          "agent_id": {
+            "default": "external-ai-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "delivery_note": {
+            "default": "",
+            "title": "Delivery Note",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "default": "",
+            "title": "Idempotency Key",
+            "type": "string"
+          }
+        },
+        "title": "place_orderArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "payment.audit",
+      "namespace": "payment",
+      "description": "Read-only: tail of the unified Mastercard audit ledger.\n\n        When to call: a charge returned with a task_id / rrn / cgr_id and you\n        want the full actor chain (human → consumer_agent → token_issuer →\n        hex_agent → mastercard → acq_hk), or you're reconciling a refund.\n\n        Args:\n            correlation_id: Filter to one transaction's chain. Accepts\n                task_id / rrn / cgr_id / enrollment_id.\n            limit: 1..200, defaults to 50.\n\n        Output: {count, correlation_id, events: [...]}. Events are ordered\n        oldest-first within a correlation, newest-first across correlations.",
+      "inputSchema": {
+        "properties": {
+          "correlation_id": {
+            "default": "",
+            "title": "Correlation Id",
+            "type": "string"
+          },
+          "limit": {
+            "default": 50,
+            "title": "Limit",
+            "type": "integer"
+          }
+        },
+        "title": "payment_auditArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "payment.authorize",
+      "namespace": "payment",
+      "description": "Mint a scoped agentic-payment JWT bound to (cardholder, agent,\n        amount limit, intent hash, expiry). Returns the token + scope so\n        the agent can pass it to `cart.checkout` / `payment.charge`.\n\n        This is the agent-facing wrapper around `services.agentic_payment`\n        — same engine the WhatsApp / web flows already use.",
+      "inputSchema": {
+        "properties": {
+          "amount_cents": {
+            "title": "Amount Cents",
+            "type": "integer"
+          },
+          "intent": {
+            "title": "Intent",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "title": "Cardholder Id",
+            "type": "string"
+          },
+          "card_last4": {
+            "default": "4242",
+            "title": "Card Last4",
+            "type": "string"
+          },
+          "network": {
+            "default": "mastercard",
+            "title": "Network",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 1800,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_cents",
+          "intent",
+          "cardholder_id"
+        ],
+        "title": "payment_authorizeArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "payment.charge",
+      "namespace": "payment",
+      "description": "Submit a charge against the Hong Kong Mastercard acquirer.\n\n        Two providers, picked via `provider`:\n\n        - \"hex\" (default): caller already holds a token_id (MDES enrollment)\n          plus a single-use cryptogram_wire (passkey-bound). Lowest-latency\n          path; the canonical agentic-commerce flow once a token is on file.\n        - \"agenzo\": caller has only a pm_id (Agenzo payment method). This\n          tool fetches a network-token + cryptogram from Agenzo, wraps it,\n          then submits via the same hex_agent. Requires\n          FEATURE_AGENZO_NETWORK_TOKEN=true.\n\n        Both paths emit the same audit row shape into payment.audit, so\n        downstream reconciliation doesn't care which provider was used.\n\n        When to call: at order-commit time, when payment.authorize was either\n        not used (one-shot pay) or has been redeemed and you have a usable\n        token. For agentic-payment authorization-then-charge, prefer passing\n        `payment_token` directly to order.place / cart.checkout — they call\n        this tool internally.\n\n        Args:\n            amount_cents: Charge amount in minor units (HK cents).\n            currency: ISO-4217 alpha-3, e.g. \"HKD\" / \"USD\" / \"CNY\".\n            intent: Natural-language intent (must match cryptogram intent_hash\n                for hex; logged for trace for agenzo).\n            merchant_id: Merchant identifier, defaults to demo merchant.\n            provider: \"hex\" | \"agenzo\". Default \"hex\".\n            token_id: (provider=\"hex\") Network token from MDES enrollment,\n                e.g. \"tok_ma_a3f1…\". Required for hex.\n            cryptogram_wire: (provider=\"hex\") Single-use cryptogram in form\n                \"cgr_<id>.<payload>.<mac>\". Required for hex.\n            pm_id: (provider=\"agenzo\") Agenzo payment method id (\"pm_xxx\").\n                Required for agenzo.\n            api_key: (provider=\"agenzo\") Agenzo API key override (defaults\n                to AGENZO_API_KEY env).\n            agent_id / cardholder_id: (legacy fallback) Caller identity.\n                IGNORED when an `Authorization: Bearer …` header is present.\n\n        Output: {provider, task_id, task_state, approved, auth_code, rrn,\n            network_response_code, cgr_id, amount_cents, currency, reason}.\n            agenzo path additionally returns {agenzo_token_id,\n            agenzo_cryptogram_raw} for traceability.\n\n        Hard constraint: the cryptogram_wire is single-use. Don't retry a\n        declined charge with the same wire — re-mint via your token issuer.",
+      "inputSchema": {
+        "properties": {
+          "amount_cents": {
+            "title": "Amount Cents",
+            "type": "integer"
+          },
+          "currency": {
+            "default": "HKD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "intent": {
+            "default": "",
+            "title": "Intent",
+            "type": "string"
+          },
+          "merchant_id": {
+            "default": "",
+            "title": "Merchant Id",
+            "type": "string"
+          },
+          "provider": {
+            "default": "hex",
+            "title": "Provider",
+            "type": "string"
+          },
+          "token_id": {
+            "default": "",
+            "title": "Token Id",
+            "type": "string"
+          },
+          "cryptogram_wire": {
+            "default": "",
+            "title": "Cryptogram Wire",
+            "type": "string"
+          },
+          "pm_id": {
+            "default": "",
+            "title": "Pm Id",
+            "type": "string"
+          },
+          "api_key": {
+            "default": "",
+            "title": "Api Key",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "amount_cents"
+        ],
+        "title": "payment_chargeArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "payment.refund",
+      "namespace": "payment",
+      "description": "Issue a refund against a prior order. amount_cents=0 means full\n        refund. This is a demo placeholder — it logs to the Mastercard\n        ledger and updates the in-memory order's payment_status, but does\n        not call out to a real network.",
+      "inputSchema": {
+        "properties": {
+          "order_id": {
+            "title": "Order Id",
+            "type": "string"
+          },
+          "amount_cents": {
+            "default": 0,
+            "title": "Amount Cents",
+            "type": "integer"
+          },
+          "reason": {
+            "default": "",
+            "title": "Reason",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "default": "",
+            "title": "Cardholder Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "order_id"
+        ],
+        "title": "payment_refundArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "session.handoff",
+      "namespace": "session",
+      "description": "Issue a one-shot handoff token. Hand the token to the user (deep\n        link, QR), they paste it into another agent host, that host calls\n        `session.resume(token)` to recover the same cart.\n\n        Args:\n            from_session_id: The current channel-prefixed session id.\n            cardholder_id: Stable user identity (Mastercard cardholder id).\n            cart_id: Optional — the cart the user is currently editing.\n            to_agent_hint: Free-form hint of where the user is heading.\n            ttl_seconds: How long the token is valid (60..900, default 300).",
+      "inputSchema": {
+        "properties": {
+          "from_session_id": {
+            "title": "From Session Id",
+            "type": "string"
+          },
+          "cardholder_id": {
+            "title": "Cardholder Id",
+            "type": "string"
+          },
+          "cart_id": {
+            "default": "",
+            "title": "Cart Id",
+            "type": "string"
+          },
+          "to_agent_hint": {
+            "default": "",
+            "title": "To Agent Hint",
+            "type": "string"
+          },
+          "ttl_seconds": {
+            "default": 300,
+            "title": "Ttl Seconds",
+            "type": "integer"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_session_id",
+          "cardholder_id"
+        ],
+        "title": "session_handoffArguments",
+        "type": "object"
+      }
+    },
+    {
+      "name": "session.resume",
+      "namespace": "session",
+      "description": "Redeem a handoff token (one-shot). Returns the cardholder_id and\n        any prior cart_id so the resuming agent can continue ordering.",
+      "inputSchema": {
+        "properties": {
+          "token": {
+            "title": "Token",
+            "type": "string"
+          },
+          "agent_id": {
+            "default": "external-agent",
+            "title": "Agent Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "session_resumeArguments",
+        "type": "object"
+      }
+    }
+  ],
+  "aliases": {
+    "search_merchants": "merchant.search",
+    "get_menu": "menu.get",
+    "place_order": "order.place",
+    "list_recent_orders": "order.list",
+    "payment.agenzo_charge": "payment.charge"
+  },
+  "tool_count": {
+    "primary": 18,
+    "aliases": 5,
+    "total_exposed": 23
+  }
+}

@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Lumi MCP — agent-ready commerce</title>
+<meta name="description" content="Standard Model Context Protocol server for restaurant commerce. Five surfaces, one tool catalog, one audit ledger. Built for AI agents." />
+<meta property="og:title" content="Lumi MCP — agent-ready commerce" />
+<meta property="og:description" content="Standard MCP. No vendor SDK. Built for agents." />
+<link rel="alternate" type="application/json" title="Tool manifest" href="./tools.json" />
+<link rel="alternate" type="text/plain" title="llms.txt" href="./llms.txt" />
+<style>
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{margin:0;padding:0;background:#0a0a0a;color:#e6e6e6;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Inter",system-ui,sans-serif;font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  body{min-height:100vh}
+  a{color:#7dd3fc;text-decoration:none;border-bottom:1px solid rgba(125,211,252,.25)}
+  a:hover{color:#bae6fd;border-bottom-color:#bae6fd}
+  code,pre,.mono{font-family:"SF Mono","JetBrains Mono",ui-monospace,Menlo,Consolas,monospace}
+  .container{max-width:920px;margin:0 auto;padding:64px 24px}
+  header{padding-bottom:24px;border-bottom:1px solid #1f1f1f}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border:1px solid #262626;border-radius:999px;font-size:12px;color:#a3a3a3;font-family:"SF Mono",ui-monospace,monospace}
+  .pill.live{border-color:#16a34a55;color:#86efac}
+  .pill.live::before{content:"";width:6px;height:6px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 3px #16a34a22}
+  h1{font-size:54px;line-height:1.05;margin:24px 0 12px;font-weight:700;letter-spacing:-0.025em}
+  h1 em{font-style:normal;background:linear-gradient(120deg,#7dd3fc,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .tagline{font-size:20px;color:#a3a3a3;max-width:640px;margin:0}
+  .agent-cta{margin:24px 0 0;padding:14px 18px;border:1px dashed #404040;border-radius:8px;background:#101010;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  .agent-cta strong{color:#fde68a;font-family:"SF Mono",ui-monospace,monospace;font-size:13px}
+  .agent-cta a{font-size:13px}
+  section{padding:48px 0;border-bottom:1px solid #1f1f1f}
+  section:last-of-type{border-bottom:none}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.18em;color:#737373;margin:0 0 20px;font-weight:600;font-family:"SF Mono",ui-monospace,monospace}
+  h3{font-size:20px;margin:32px 0 12px;font-weight:600;letter-spacing:-0.01em}
+  p{margin:0 0 12px}
+  pre{background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px;padding:16px 18px;overflow-x:auto;font-size:13px;line-height:1.55;color:#d4d4d4;margin:8px 0 16px;position:relative}
+  pre .cmt{color:#737373}
+  pre .kw{color:#f0abfc}
+  pre .str{color:#86efac}
+  pre .num{color:#fcd34d}
+  pre .fn{color:#7dd3fc}
+  .copy-btn{position:absolute;top:8px;right:8px;background:#1a1a1a;border:1px solid #2d2d2d;color:#a3a3a3;font-size:11px;font-family:"SF Mono",ui-monospace,monospace;padding:3px 8px;border-radius:4px;cursor:pointer;opacity:0;transition:opacity .15s}
+  pre:hover .copy-btn{opacity:1}
+  .copy-btn:hover{color:#e5e5e5;border-color:#404040}
+  .copy-btn.ok{color:#86efac;border-color:#16a34a55}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:16px 0}
+  .endpoint{padding:14px 16px;background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px}
+  .endpoint .label{font-size:11px;color:#737373;text-transform:uppercase;letter-spacing:.12em;margin-bottom:6px}
+  .endpoint code{font-size:13px;color:#7dd3fc;word-break:break-all}
+  .flow{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px;padding:18px;color:#d4d4d4;line-height:1.9;overflow-x:auto;white-space:pre}
+  .flow .acc{color:#7dd3fc}
+  .flow .opt{color:#a3a3a3}
+  .ns{margin:24px 0;padding:18px;background:#0f0f0f;border:1px solid #1f1f1f;border-radius:8px}
+  .ns-head{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid #1f1f1f}
+  .ns-name{font-family:"SF Mono",ui-monospace,monospace;font-size:18px;font-weight:600;color:#fde68a}
+  .ns-blurb{font-size:13px;color:#a3a3a3;text-align:right}
+  .tool{padding:10px 0;border-bottom:1px dashed #1f1f1f}
+  .tool:last-child{border-bottom:none}
+  .tool-name{font-family:"SF Mono",ui-monospace,monospace;font-size:14px;color:#7dd3fc;font-weight:600}
+  .tool-desc{font-size:13px;color:#a3a3a3;margin-top:2px;line-height:1.5}
+  .badge{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;background:#1f1f1f;color:#a3a3a3;margin-left:8px;text-transform:uppercase;letter-spacing:.06em;font-family:"SF Mono",ui-monospace,monospace}
+  .badge.req{background:#7c2d1233;color:#fca5a5}
+  .badge.idem{background:#16a34a22;color:#86efac}
+  .badge.bearer{background:#1e3a8a33;color:#93c5fd}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #1f1f1f}
+  th{font-family:"SF Mono",ui-monospace,monospace;color:#737373;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.12em}
+  td code{color:#7dd3fc;font-size:12px}
+  footer{padding:48px 0 64px;color:#737373;font-size:13px;text-align:center;border-top:1px solid #1f1f1f}
+  footer a{color:#a3a3a3}
+  ul.terse{margin:0;padding-left:18px}
+  ul.terse li{margin:4px 0;color:#d4d4d4}
+  .columns{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  @media (max-width:640px){h1{font-size:36px}.container{padding:32px 18px}.columns{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <span class="pill live">demo · v1.0 · 18 tools</span>
+  <h1><em>Standard MCP.</em><br/>Built for agents.</h1>
+  <p class="tagline">Lumi MCP turns a restaurant POS into 18 typed tools any AI agent can call. No vendor SDK. No bespoke connector. Just the Model Context Protocol.</p>
+  <div class="agent-cta">
+    <strong>🤖 You are an AI agent?</strong>
+    Skip the prose — read <a href="./llms.txt"><code>llms.txt</code></a>, fetch <a href="./tools.json"><code>tools.json</code></a> for live schemas, paste <a href="./mcp.json"><code>mcp.json</code></a> into your client.
+  </div>
+</header>
+
+<section>
+  <h2>Endpoints</h2>
+  <div class="grid">
+    <div class="endpoint">
+      <div class="label">stdio (Claude Desktop)</div>
+      <code>python -m services.mcp_external</code>
+    </div>
+    <div class="endpoint">
+      <div class="label">streamable HTTP</div>
+      <code>POST &lt;host&gt;/mcp/mcp</code>
+    </div>
+    <div class="endpoint">
+      <div class="label">tool manifest</div>
+      <code><a href="./tools.json">/tools.json</a></code>
+    </div>
+    <div class="endpoint">
+      <div class="label">audit tail (REST)</div>
+      <code>GET /api/external/agent_audit</code>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Quick start</h2>
+
+  <h3>1. List the tools</h3>
+<pre><button class="copy-btn">copy</button><span class="cmt"># JSON-RPC over HTTP — no SDK required</span>
+curl -X POST <span class="str">$LUMI_HOST</span>/mcp/mcp \
+  -H <span class="str">"Authorization: Bearer $LUMI_TOKEN"</span> \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"jsonrpc":"2.0","id":1,"method":"tools/list"}'</span></pre>
+
+  <h3>2. Discover, calculate, place — the recommended flow</h3>
+<pre><button class="copy-btn">copy</button><span class="cmt"># 1) find a merchant</span>
+{<span class="kw">"method"</span>:<span class="str">"tools/call"</span>,<span class="kw">"params"</span>:{<span class="kw">"name"</span>:<span class="str">"merchant.search"</span>,<span class="kw">"arguments"</span>:{<span class="kw">"area"</span>:<span class="str">"Central"</span>}}}
+
+<span class="cmt"># 2) read its menu (sku is a closed enum, validated)</span>
+{<span class="kw">"method"</span>:<span class="str">"tools/call"</span>,<span class="kw">"params"</span>:{<span class="kw">"name"</span>:<span class="str">"menu.get"</span>,<span class="kw">"arguments"</span>:{<span class="kw">"merchant_id"</span>:<span class="str">"merch_..."</span>}}}
+
+<span class="cmt"># 3) quote the order — show user the total before they confirm</span>
+{<span class="kw">"method"</span>:<span class="str">"tools/call"</span>,<span class="kw">"params"</span>:{<span class="kw">"name"</span>:<span class="str">"order.calculate"</span>,
+ <span class="kw">"arguments"</span>:{<span class="kw">"merchant_id"</span>:<span class="str">"merch_..."</span>,
+              <span class="kw">"items"</span>:[{<span class="kw">"sku"</span>:<span class="str">"BEV-LATTE"</span>,<span class="kw">"quantity"</span>:<span class="num">2</span>}]}}}
+<span class="cmt"># → returns { quote_id, total_hkd, expires_at, needs_review, ... }</span>
+
+<span class="cmt"># 4) commit — quote_id is also a natural idempotency key</span>
+{<span class="kw">"method"</span>:<span class="str">"tools/call"</span>,<span class="kw">"params"</span>:{<span class="kw">"name"</span>:<span class="str">"order.place"</span>,
+ <span class="kw">"arguments"</span>:{<span class="kw">"quote_id"</span>:<span class="str">"q_..."</span>,
+              <span class="kw">"payment_token"</span>:<span class="str">"&lt;jwt from payment.authorize&gt;"</span>}}}</pre>
+
+  <h3>3. Or paste this MCP client config</h3>
+<pre><button class="copy-btn">copy</button>{
+  <span class="kw">"mcpServers"</span>: {
+    <span class="kw">"lumi"</span>: {
+      <span class="kw">"url"</span>: <span class="str">"https://&lt;host&gt;/mcp/mcp"</span>,
+      <span class="kw">"transport"</span>: <span class="str">"streamable_http"</span>,
+      <span class="kw">"headers"</span>: { <span class="kw">"Authorization"</span>: <span class="str">"Bearer &lt;your-token&gt;"</span> }
+    }
+  }
+}</pre>
+</section>
+
+<section>
+  <h2>Conversation flow</h2>
+  <div class="flow"><span class="acc">merchant.search</span>  →  <span class="acc">menu.get</span>  →  <span class="opt">[order.calculate →]</span>  <span class="acc">order.place</span>
+                              ↘                    ↗
+                                <span class="acc">cart.create + cart.add* + cart.checkout</span>
+
+                                                    →  <span class="opt">session.handoff (cross-surface)</span></div>
+  <p style="margin-top:14px;color:#a3a3a3;font-size:14px">Two-stage commit (<code>order.calculate → order.place(quote_id=…)</code>) is the recommended path. The <code>quote_id</code> binds items + total + delivery_note at quote time, doubles as a natural idempotency key, and lets you preview the price before charging.</p>
+</section>
+
+<section>
+  <h2>Tool catalog</h2>
+  <p style="color:#a3a3a3;font-size:14px;margin-bottom:24px">18 primary tools across 7 namespaces. Schemas live in <a href="./tools.json"><code>tools.json</code></a>. <code>{REQ}</code> = required arg; <code>{IDEM}</code> = accepts <code>idempotency_key</code>; <code>{BEARER}</code> = identity prefers Authorization header.</p>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">merchant.*</span><span class="ns-blurb">discovery</span></div>
+    <div class="tool"><div class="tool-name">merchant.search</div><div class="tool-desc">Discover merchants by area + cuisine. Returns opaque <code>merchant_id</code> to feed everything downstream.</div></div>
+  </div>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">menu.*</span><span class="ns-blurb">catalog</span></div>
+    <div class="tool"><div class="tool-name">menu.get <span class="badge req">merchant_id</span></div><div class="tool-desc">Live menu with stock / promo / out-of-stock alternatives. <code>items[*].sku</code> is the closed enum the agent must reuse verbatim.</div></div>
+  </div>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">order.*</span><span class="ns-blurb">single-call ordering · two-stage commit</span></div>
+    <div class="tool"><div class="tool-name">order.calculate</div><div class="tool-desc">Quote a draft order. Returns <code>quote_id</code> (10-min TTL) + frozen total + review flags. Show the user, wait for confirm.</div></div>
+    <div class="tool"><div class="tool-name">order.place <span class="badge idem">idempotency_key</span> <span class="badge bearer">bearer</span></div><div class="tool-desc">Commit. Either <code>quote_id</code> (recommended) or <code>{merchant_id, items}</code>. <code>payment_token</code> from <code>payment.authorize</code> charges immediately.</div></div>
+    <div class="tool"><div class="tool-name">order.list</div><div class="tool-desc">Recent orders placed via the external MCP channel. Replay-friendly.</div></div>
+  </div>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">cart.*</span><span class="ns-blurb">multi-turn ordering</span></div>
+    <div class="tool"><div class="tool-name">cart.create</div><div class="tool-desc">Open a cart for (merchant, cardholder, agent). Returns <code>cart_id</code>.</div></div>
+    <div class="tool"><div class="tool-name">cart.add <span class="badge idem">idempotency_key</span></div><div class="tool-desc">Append a line. Per-line note. Embeds the running cart card as <code>ui://lumi/cart/&lt;id&gt;</code>.</div></div>
+    <div class="tool"><div class="tool-name">cart.update</div><div class="tool-desc">Change qty (0 = delete) or rewrite note for one line.</div></div>
+    <div class="tool"><div class="tool-name">cart.remove</div><div class="tool-desc">Drop a line. Convenience for <code>cart.update(qty=0)</code>.</div></div>
+    <div class="tool"><div class="tool-name">cart.view</div><div class="tool-desc">Read cart with the rendered UI card. <code>cart_id</code> optional (falls back to the cardholder's most recent open cart).</div></div>
+    <div class="tool"><div class="tool-name">cart.checkout <span class="badge idem">idempotency_key</span> <span class="badge bearer">bearer</span></div><div class="tool-desc">Convert open cart → real order via the same handler as <code>order.place</code>. Cart transitions to <code>checked_out</code>.</div></div>
+  </div>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">session.*</span><span class="ns-blurb">cross-surface continuity</span></div>
+    <div class="tool"><div class="tool-name">session.handoff</div><div class="tool-desc">Mint a one-shot token. User pastes it into another agent host (Claude Desktop ↔ ChatGPT) to keep the same cart.</div></div>
+    <div class="tool"><div class="tool-name">session.resume</div><div class="tool-desc">Redeem the token. Returns the cardholder's open cart snapshot.</div></div>
+  </div>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">payment.*</span><span class="ns-blurb">agentic payment + Mastercard ACP</span></div>
+    <div class="tool"><div class="tool-name">payment.authorize</div><div class="tool-desc">Mint a scoped JWT bound to (cardholder, agent, amount limit, intent hash, expiry). Pass it as <code>payment_token</code> to order/cart commit tools.</div></div>
+    <div class="tool"><div class="tool-name">payment.charge</div><div class="tool-desc">Submit charge. <code>provider="hex"</code> (default; needs token_id + cryptogram_wire) or <code>provider="agenzo"</code> (needs pm_id; fetches network token).</div></div>
+    <div class="tool"><div class="tool-name">payment.refund</div><div class="tool-desc">Refund a prior order. <code>amount_cents=0</code> = full. Logs into the unified audit ledger.</div></div>
+    <div class="tool"><div class="tool-name">payment.audit</div><div class="tool-desc">Read-only tail of the actor chain (human → consumer_agent → token_issuer → hex_agent → mastercard → acquirer). Filter by correlation_id.</div></div>
+  </div>
+
+  <div class="ns">
+    <div class="ns-head"><span class="ns-name">identity.*</span><span class="ns-blurb">bearer issuance</span></div>
+    <div class="tool"><div class="tool-name">identity.issue</div><div class="tool-desc">Mint an Authorization Bearer JWT for a new agent host. Use this once per host; subsequent tool calls send the token in headers.</div></div>
+  </div>
+</section>
+
+<section>
+  <h2>Conventions</h2>
+  <div class="columns">
+    <div>
+      <h3>Naming</h3>
+      <ul class="terse">
+        <li>Dotted: <code>namespace.verb</code>.</li>
+        <li>Snake-case names (<code>search_merchants</code>, <code>place_order</code>, …) are kept as aliases for back-compat. New agents should use the dotted form.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Identity</h3>
+      <ul class="terse">
+        <li>Bearer JWT in <code>Authorization</code> header is preferred.</li>
+        <li><code>agent_id</code> / <code>cardholder_id</code> args on tools are a fallback for stdio. <strong>Ignored</strong> when the header is present.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Idempotency</h3>
+      <ul class="terse">
+        <li>Money-moving tools accept <code>idempotency_key</code>. Same key on retry returns the original order without re-charging.</li>
+        <li><code>quote_id</code> auto-derives <code>"q:&lt;quote_id&gt;"</code> as the key.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>SKU validation</h3>
+      <ul class="terse">
+        <li><code>items[*].sku</code> is a closed enum derived from the live menu.</li>
+        <li>Bad SKUs are rejected at the JSON-Schema layer — never reach the handler.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>Aliases</h2>
+  <table>
+    <thead><tr><th>Legacy name</th><th>Canonical</th></tr></thead>
+    <tbody>
+      <tr><td><code>search_merchants</code></td><td><code>merchant.search</code></td></tr>
+      <tr><td><code>get_menu</code></td><td><code>menu.get</code></td></tr>
+      <tr><td><code>place_order</code></td><td><code>order.place</code></td></tr>
+      <tr><td><code>list_recent_orders</code></td><td><code>order.list</code></td></tr>
+      <tr><td><code>payment.agenzo_charge</code></td><td><code>payment.charge(provider="agenzo")</code></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  <p>Lumi MCP · standard <a href="https://modelcontextprotocol.io">Model Context Protocol</a> · agent-first by design</p>
+  <p style="margin-top:8px"><a href="./llms.txt">llms.txt</a> · <a href="./tools.json">tools.json</a> · <a href="./mcp.json">mcp.json</a></p>
+</footer>
+
+</div>
+
+<script>
+document.querySelectorAll(".copy-btn").forEach(btn=>{
+  btn.addEventListener("click",async()=>{
+    const pre=btn.parentElement;
+    const text=Array.from(pre.childNodes).filter(n=>n.nodeType!==1||n.tagName!=="BUTTON").map(n=>n.textContent).join("");
+    try{await navigator.clipboard.writeText(text.trim());btn.textContent="copied";btn.classList.add("ok");setTimeout(()=>{btn.textContent="copy";btn.classList.remove("ok")},1400)}catch(e){btn.textContent="err"}
+  });
+});
+</script>
+</body>
+</html>
